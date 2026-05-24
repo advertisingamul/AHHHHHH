@@ -1,0 +1,13 @@
+{
+  "name": "ahhhhhh",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Railway-ready wrapper for the Amul Ads Intelligence Dashboard",
+  "type": "commonjs",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node server.js"
+  }
+}
