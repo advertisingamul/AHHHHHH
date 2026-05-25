@@ -5888,6 +5888,8 @@
       const activityMonths = activity.months || [];
       const displayMonths = [...activityMonths].reverse();
       const visibleActivityLabels = activityFocus ? [activityFocus] : displayMonths.map((entry) => entry.label);
+      const selectedFestivalMonthLabel = activityFocus || currentLabel;
+      const selectedFestivalMonthColor = activityMonths.find((entry) => entry.label === selectedFestivalMonthLabel)?.color || '#00C9A7';
       const festivalEventLookup = useMemo(() => {
         const byMonthDay = {};
         const byDay = {};
@@ -5895,7 +5897,7 @@
           const parsed = parseDateFilterValue(event.date);
           if (!parsed) return;
           const monthLabel = formatMonthLabel(parsed);
-          if (!visibleActivityLabels.includes(monthLabel)) return;
+          if (monthLabel !== selectedFestivalMonthLabel) return;
           const day = parsed.getDate();
           const monthDayKey = `${monthLabel}-${day}`;
           byMonthDay[monthDayKey] = byMonthDay[monthDayKey] || [];
@@ -5904,9 +5906,9 @@
           byDay[day].push(event);
         });
         return { byMonthDay, byDay };
-      }, [activeFestivalEvents, visibleActivityLabels]);
+      }, [activeFestivalEvents, selectedFestivalMonthLabel]);
       const festivalMarkerPlugin = useMemo(() => ({
-        id: `festival-markers-${visibleActivityLabels.join('-')}-${festivalMarkerEnabled ? 'on' : 'off'}`,
+        id: `festival-markers-${selectedFestivalMonthLabel}-${festivalMarkerEnabled ? 'on' : 'off'}`,
         afterDatasetsDraw(chart) {
           if (!festivalMarkerEnabled) return;
           const xScale = chart.scales.x;
@@ -5916,15 +5918,9 @@
             if (!events?.length) return;
             const index = Number(day) - 1;
             const x = xScale.getPixelForValue(index);
-            const priorityType = events.some((event) => event.type === 'national')
-              ? 'national'
-              : events.some((event) => event.type === 'festival')
-                ? 'festival'
-                : 'cultural';
-            const color = priorityType === 'national' ? '#F5A623' : priorityType === 'festival' ? '#00C9A7' : '#8A9CC0';
             const { ctx } = chart;
             ctx.save();
-            ctx.strokeStyle = color;
+            ctx.strokeStyle = selectedFestivalMonthColor;
             ctx.lineWidth = 1;
             ctx.setLineDash([4, 4]);
             ctx.globalAlpha = 0.6;
@@ -5933,7 +5929,7 @@
             ctx.lineTo(x, chartArea.bottom);
             ctx.stroke();
             ctx.setLineDash([]);
-            ctx.fillStyle = color;
+            ctx.fillStyle = selectedFestivalMonthColor;
             ctx.beginPath();
             ctx.moveTo(x, chartArea.top);
             ctx.lineTo(x - 5, chartArea.top + 8);
@@ -5943,7 +5939,7 @@
             ctx.restore();
           });
         }
-      }), [festivalEventLookup, festivalMarkerEnabled, visibleActivityLabels]);
+      }), [festivalEventLookup, festivalMarkerEnabled, selectedFestivalMonthColor, selectedFestivalMonthLabel]);
       useEffect(() => {
         if (activityFocus && !activityMonths.some((month) => month.label === activityFocus)) {
           setActivityFocus(null);
@@ -6043,7 +6039,12 @@
                     y: { grid: { color: '#18253F' }, ticks: { color: '#8A9CC0' } }
                   },
                   plugins: {
-                    legend: { display: false },
+                    legend: {
+                      display: true,
+                      position: 'top',
+                      align: 'end',
+                      labels: { color: '#8A9CC0' }
+                    },
                     tooltip: {
                       callbacks: {
                         label: (ctx) => `Ads: ${fmt.num(ctx.parsed.y)}`,
