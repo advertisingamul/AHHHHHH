@@ -5693,7 +5693,12 @@
             if (points.length) onPointClick(points[0]);
           };
         }
-        return () => chartRef.current?.destroy();
+        return () => {
+          if (chartRef.current) {
+            chartRef.current.destroy();
+            chartRef.current = null;
+          }
+        };
       }, [type, data, options, onPointClick]);
       return <canvas ref={canvasRef}></canvas>;
     }
