@@ -192,5 +192,5 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, HOST, () => {
-  console.log(`AHHHHHH listening on http://${HOST}:${PORT}`);
+  console.log(`Amul Campaign Monitor listening on http://${HOST}:${PORT}`);
 });

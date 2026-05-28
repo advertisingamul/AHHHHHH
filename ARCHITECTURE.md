@@ -1,4 +1,4 @@
-# Amul Ads Intelligence Dashboard — Architecture Reference
+# Amul Campaign Monitor — Architecture Reference
 
 ## Project Overview
 A self-contained single HTML file dashboard for Amul's ad team. Parses Meta Ads Manager Excel exports. No backend, no install, runs in any browser. Built for monthly upload by the ad team — drop in 1-3 monthly Excel files and get instant analysis.

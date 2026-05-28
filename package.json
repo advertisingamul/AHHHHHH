@@ -2,7 +2,7 @@
   "name": "ahhhhhh",
   "version": "1.0.0",
   "private": true,
-  "description": "Railway-ready wrapper for the Amul Ads Intelligence Dashboard",
+  "description": "Railway-ready wrapper for the Amul Campaign Monitor",
   "type": "commonjs",
   "engines": {
     "node": ">=18"

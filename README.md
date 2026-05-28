@@ -1,6 +1,6 @@
-# AHHHHHH
+# Amul Campaign Monitor
 
-Railway-ready deployment wrapper for the Amul Ads Intelligence Dashboard.
+Railway-ready deployment wrapper for the Amul Campaign Monitor.
 
 ## What changed
 
