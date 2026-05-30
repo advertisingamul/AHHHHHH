@@ -10,8 +10,50 @@ const INDEX_FILE = path.join(ROOT, 'AmulAdsDashboard.html');
 const DEFAULT_CALENDAR_ID = 'en.indian#holiday@group.v.calendar.google.com';
 const CALENDAR_CACHE_TTL = 6 * 60 * 60 * 1000;
 
+// ---------------------------------------------------------------------------
+// Shared data store — centralized files + benchmarks
+//
+// DATA_DIR is configurable so Railway can point it at a persistent volume.
+// Set DATA_DIR=/data in Railway env vars and mount a volume at /data to
+// survive restarts. Without a volume the data folder sits next to server.js
+// and is wiped on each Railway deploy (re-upload needed after each deploy).
+// ---------------------------------------------------------------------------
+const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
+const SHARED_DATA_FILE = path.join(DATA_DIR, 'shared-data.json');
+
+let sharedState = { files: [], savedAt: null, benchmarks: null };
+
+function loadSharedData() {
+  try {
+    if (!fs.existsSync(SHARED_DATA_FILE)) return;
+    const raw = fs.readFileSync(SHARED_DATA_FILE, 'utf8');
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === 'object') {
+      sharedState = { ...sharedState, ...parsed };
+      console.log(`Shared data loaded: ${(sharedState.files || []).length} file(s)`);
+    }
+  } catch (e) {
+    console.warn('Could not load shared data:', e.message);
+  }
+}
+
+function saveSharedData() {
+  try {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+    fs.writeFileSync(SHARED_DATA_FILE, JSON.stringify(sharedState), 'utf8');
+  } catch (e) {
+    console.warn('Could not persist shared data:', e.message);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// In-memory calendar cache
+// ---------------------------------------------------------------------------
 const memoryCache = new Map();
 
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 function sendJson(res, statusCode, payload) {
   res.writeHead(statusCode, {
     'Content-Type': 'application/json; charset=utf-8',
@@ -53,6 +95,27 @@ function safeResolve(requestPath) {
   return resolved;
 }
 
+function readBody(req, maxBytes = 50 * 1024 * 1024) {
+  return new Promise((resolve, reject) => {
+    let body = '';
+    let size = 0;
+    req.on('data', (chunk) => {
+      size += chunk.length;
+      if (size > maxBytes) {
+        req.destroy();
+        reject(new Error('Request body too large (50 MB limit)'));
+        return;
+      }
+      body += chunk;
+    });
+    req.on('end', () => resolve(body));
+    req.on('error', reject);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Calendar API proxy
+// ---------------------------------------------------------------------------
 function getCalendarCacheKey(calendarId, year) {
   return `${calendarId}__${year}`;
 }
@@ -106,9 +169,7 @@ async function fetchCalendarEvents(calendarId, year) {
   remoteUrl.searchParams.set('maxResults', '500');
 
   const response = await fetch(remoteUrl, {
-    headers: {
-      'Accept': 'application/json'
-    }
+    headers: { 'Accept': 'application/json' }
   });
 
   if (!response.ok) {
@@ -144,19 +205,86 @@ async function handleCalendarApi(reqUrl, res) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Datasets API — centralized file sharing
+// ---------------------------------------------------------------------------
+function handleDatasetsGet(res) {
+  sendJson(res, 200, {
+    files: sharedState.files || [],
+    savedAt: sharedState.savedAt || null,
+    count: (sharedState.files || []).length
+  });
+}
+
+async function handleDatasetsPost(req, res) {
+  let parsed;
+  try {
+    const raw = await readBody(req);
+    parsed = JSON.parse(raw);
+  } catch {
+    sendJson(res, 400, { error: 'Invalid JSON body.' });
+    return;
+  }
+  if (!Array.isArray(parsed?.files) || !parsed.files.length) {
+    sendJson(res, 400, { error: '"files" array is required.' });
+    return;
+  }
+  sharedState.files = parsed.files;
+  sharedState.savedAt = new Date().toISOString();
+  saveSharedData();
+  console.log(`Shared data updated: ${sharedState.files.length} file(s) at ${sharedState.savedAt}`);
+  sendJson(res, 200, { ok: true, savedAt: sharedState.savedAt, count: sharedState.files.length });
+}
+
+function handleDatasetsDelete(res) {
+  sharedState.files = [];
+  sharedState.savedAt = null;
+  saveSharedData();
+  sendJson(res, 200, { ok: true });
+}
+
+// ---------------------------------------------------------------------------
+// Benchmarks API — shared benchmark settings
+// ---------------------------------------------------------------------------
+function handleBenchmarksGet(res) {
+  sendJson(res, 200, { benchmarks: sharedState.benchmarks || null });
+}
+
+async function handleBenchmarksPost(req, res) {
+  let parsed;
+  try {
+    const raw = await readBody(req);
+    parsed = JSON.parse(raw);
+  } catch {
+    sendJson(res, 400, { error: 'Invalid JSON body.' });
+    return;
+  }
+  if (!parsed?.benchmarks || typeof parsed.benchmarks !== 'object') {
+    sendJson(res, 400, { error: '"benchmarks" object is required.' });
+    return;
+  }
+  sharedState.benchmarks = parsed.benchmarks;
+  saveSharedData();
+  sendJson(res, 200, { ok: true });
+}
+
+// ---------------------------------------------------------------------------
+// Static file serving
+// ---------------------------------------------------------------------------
 function handleStaticAsset(filePath, res) {
   fs.stat(filePath, (error, stats) => {
     if (error || !stats.isFile()) {
       sendText(res, 404, 'Not found');
       return;
     }
-    res.writeHead(200, {
-      'Content-Type': getMimeType(filePath)
-    });
+    res.writeHead(200, { 'Content-Type': getMimeType(filePath) });
     fs.createReadStream(filePath).pipe(res);
   });
 }
 
+// ---------------------------------------------------------------------------
+// Main request handler
+// ---------------------------------------------------------------------------
 const server = http.createServer(async (req, res) => {
   try {
     const reqUrl = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
@@ -164,13 +292,30 @@ const server = http.createServer(async (req, res) => {
     if (reqUrl.pathname === '/health') {
       sendJson(res, 200, {
         ok: true,
-        calendarApiConfigured: Boolean(process.env.GOOGLE_CALENDAR_API_KEY)
+        calendarApiConfigured: Boolean(process.env.GOOGLE_CALENDAR_API_KEY),
+        datasetsCount: (sharedState.files || []).length,
+        savedAt: sharedState.savedAt || null
       });
       return;
     }
 
     if (reqUrl.pathname === '/api/calendar-events') {
       await handleCalendarApi(reqUrl, res);
+      return;
+    }
+
+    if (reqUrl.pathname === '/api/datasets') {
+      if (req.method === 'GET') { handleDatasetsGet(res); return; }
+      if (req.method === 'POST') { await handleDatasetsPost(req, res); return; }
+      if (req.method === 'DELETE') { handleDatasetsDelete(res); return; }
+      sendJson(res, 405, { error: 'Method not allowed' });
+      return;
+    }
+
+    if (reqUrl.pathname === '/api/benchmarks') {
+      if (req.method === 'GET') { handleBenchmarksGet(res); return; }
+      if (req.method === 'POST') { await handleBenchmarksPost(req, res); return; }
+      sendJson(res, 405, { error: 'Method not allowed' });
       return;
     }
 
@@ -190,6 +335,8 @@ const server = http.createServer(async (req, res) => {
     sendJson(res, 500, { error: 'Internal server error' });
   }
 });
+
+loadSharedData();
 
 server.listen(PORT, HOST, () => {
   console.log(`Amul Campaign Monitor listening on http://${HOST}:${PORT}`);

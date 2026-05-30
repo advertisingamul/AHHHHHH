@@ -8646,6 +8646,49 @@ creative failure. Consider:
       return processDatasets(processed);
     }
 
+    // -----------------------------------------------------------------------
+    // Server sync — centralized file + benchmark sharing
+    // All functions are fire-and-forget safe; callers .catch(() => {}) them.
+    // -----------------------------------------------------------------------
+    async function fetchDatasetsFromServer() {
+      const res = await fetch('/api/datasets');
+      if (!res.ok) throw new Error(`/api/datasets responded ${res.status}`);
+      return res.json();
+    }
+
+    async function syncDatasetsToServer(files) {
+      const res = await fetch('/api/datasets', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ files })
+      });
+      if (!res.ok) throw new Error(`/api/datasets POST responded ${res.status}`);
+      return res.json();
+    }
+
+    async function clearDatasetsOnServer() {
+      const res = await fetch('/api/datasets', { method: 'DELETE' });
+      if (!res.ok) throw new Error(`/api/datasets DELETE responded ${res.status}`);
+      return res.json();
+    }
+
+    async function fetchBenchmarksFromServer() {
+      const res = await fetch('/api/benchmarks');
+      if (!res.ok) throw new Error(`/api/benchmarks responded ${res.status}`);
+      const data = await res.json();
+      return data?.benchmarks || null;
+    }
+
+    async function syncBenchmarksToServer(benchmarks) {
+      const res = await fetch('/api/benchmarks', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ benchmarks })
+      });
+      if (!res.ok) throw new Error(`/api/benchmarks POST responded ${res.status}`);
+      return res.json();
+    }
+
     function App() {
       const [activeTab, setActiveTab] = useState('Overview');
       const [modal, setModal] = useState(null);
@@ -8681,41 +8724,65 @@ creative failure. Consider:
 
       useEffect(() => {
         let cancelled = false;
-        const saved = checkSavedFiles();
-        if (saved?.error) {
-          clearSavedFiles();
-          setUploadMessage('Previous session could not be restored — please upload your files again');
-          setIsBooting(false);
-          return undefined;
-        }
-        if (!saved?.files?.length) {
-          setIsBooting(false);
-          return undefined;
-        }
-        restoreFromStorage(saved.files)
-          .then((restored) => {
+        async function boot() {
+          // 1. Try server first — any team member sees the latest shared data
+          try {
+            const serverData = await fetchDatasetsFromServer();
             if (cancelled) return;
-            if (!restored.some((dataset) => dataset.campaignsBase.length)) {
-              throw new Error('No valid restored rows');
+            if (Array.isArray(serverData?.files) && serverData.files.length) {
+              const restored = await restoreFromStorage(serverData.files);
+              if (!restored.some((d) => d.campaignsBase.length)) throw new Error('No valid rows in server data');
+              setRawDatasets(restored);
+              setSelectedLabel(restored[0]?.label || '');
+              setRestoreBanner({
+                labels: restored.map((item) => item.label),
+                savedAt: serverData.savedAt ? new Date(serverData.savedAt) : null,
+                source: 'server'
+              });
+              setIsBooting(false);
+              return;
             }
-            setRawDatasets(restored);
-            setSelectedLabel(restored[0]?.label || '');
-            setRestoreBanner({
-              labels: restored.map((item) => item.label),
-              savedAt: saved.savedAt
-            });
-            setIsBooting(false);
-          })
-          .catch((error) => {
-            console.error(error);
-            clearSavedFiles();
+          } catch (err) {
             if (cancelled) return;
+            console.warn('Server data unavailable, falling back to localStorage:', err.message);
+          }
+          // 2. Fall back to localStorage
+          const saved = checkSavedFiles();
+          if (saved?.error) {
+            clearSavedFiles();
             setUploadMessage('Previous session could not be restored — please upload your files again');
             setIsBooting(false);
-          });
-        return () => {
-          cancelled = true;
-        };
+            return;
+          }
+          if (!saved?.files?.length) {
+            setIsBooting(false);
+            return;
+          }
+          restoreFromStorage(saved.files)
+            .then((restored) => {
+              if (cancelled) return;
+              if (!restored.some((dataset) => dataset.campaignsBase.length)) {
+                throw new Error('No valid restored rows');
+              }
+              setRawDatasets(restored);
+              setSelectedLabel(restored[0]?.label || '');
+              setRestoreBanner({
+                labels: restored.map((item) => item.label),
+                savedAt: saved.savedAt,
+                source: 'local'
+              });
+              setIsBooting(false);
+            })
+            .catch((error) => {
+              console.error(error);
+              clearSavedFiles();
+              if (cancelled) return;
+              setUploadMessage('Previous session could not be restored — please upload your files again');
+              setIsBooting(false);
+            });
+        }
+        boot();
+        return () => { cancelled = true; };
       }, []);
 
       useEffect(() => {
@@ -8754,6 +8821,13 @@ creative failure. Consider:
       useEffect(() => {
         saveStoredJson(HIDDEN_GCAL_EVENTS_STORAGE_KEY, hiddenFestivalEvents);
       }, [hiddenFestivalEvents]);
+
+      // Fetch shared benchmarks from server on mount
+      useEffect(() => {
+        fetchBenchmarksFromServer()
+          .then((b) => { if (b && typeof b === 'object') setBenchmarks((prev) => ({ ...prev, ...b })); })
+          .catch(() => {});
+      }, []);
 
       const festivalYears = useMemo(() => [...new Set((rawDatasets || []).map((dataset) => dataset?.month?.getFullYear?.()).filter(Number.isFinite))], [rawDatasets]);
       const activeCalendarIds = useMemo(() => [
@@ -8843,9 +8917,11 @@ creative failure. Consider:
           setUntaggedOnly(false);
           setUploadMessage('');
           setRestoreBanner(null);
-          const saveResult = saveFilesToStorage(uploads.map((item) => item.saved));
+          const filePayload = uploads.map((item) => item.saved);
+          const saveResult = saveFilesToStorage(filePayload);
+          syncDatasetsToServer(filePayload).catch((err) => console.warn('Server sync failed:', err.message));
           if (!saveResult.ok) {
-            showToast('Could not save files — storage full');
+            showToast('Could not save files locally — storage full');
           } else {
             showToast('Files updated and saved');
           }
@@ -8859,7 +8935,11 @@ creative failure. Consider:
       function onBenchmarkChange(key, value) {
         const parsed = Number(value);
         if (!Number.isFinite(parsed)) return;
-        setBenchmarks((prev) => ({ ...prev, [key]: parsed }));
+        setBenchmarks((prev) => {
+          const next = { ...prev, [key]: parsed };
+          syncBenchmarksToServer(next).catch(() => {});
+          return next;
+        });
         showToast('Benchmarks updated');
       }
 
@@ -8909,6 +8989,7 @@ creative failure. Consider:
 
       function clearSession() {
         clearSavedFiles();
+        clearDatasetsOnServer().catch(() => {});
         setRawDatasets([]);
         setSelectedLabel('');
         resetDateFilter();
@@ -9038,7 +9119,10 @@ creative failure. Consider:
             </header>
             {restoreBanner ? (
               <div className="restore-banner">
-                <span>{`📁 Restored ${restoreBanner.labels.join(', ')} · Last saved ${restoreBanner.savedAt ? restoreBanner.savedAt.toLocaleString() : 'recently'} · `}</span>
+                <span>{restoreBanner.source === 'server'
+                  ? `📡 Shared session: ${restoreBanner.labels.join(', ')} · Uploaded ${restoreBanner.savedAt ? restoreBanner.savedAt.toLocaleString() : 'recently'} · `
+                  : `📁 Restored ${restoreBanner.labels.join(', ')} · Last saved ${restoreBanner.savedAt ? restoreBanner.savedAt.toLocaleString() : 'recently'} · `
+                }</span>
                 <span className="restore-banner-actions">
                   <button className="restore-link amber" onClick={triggerUpload}>Upload new files</button>
                   <button className="restore-link" onClick={clearSession}>Clear</button>
