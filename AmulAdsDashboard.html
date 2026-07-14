@@ -3326,7 +3326,7 @@
       }).filter((row) => row.name && row.spend !== 0);
     }
 
-       function isValidCalendarDate(year, month, day) {
+    function isValidCalendarDate(year, month, day) {
       const d = new Date(year, month, day);
       return d.getFullYear() === year && d.getMonth() === month && d.getDate() === day;
     }
@@ -3369,6 +3369,7 @@
       return null;
     }
 
+    function parseCampaign(name, metaPlatform) {
       const n = String(name || '').toUpperCase();
       const parts = String(name || '').split('_');
       let platform = 'Combined/Auto';
@@ -3411,21 +3412,7 @@
         else format = 'Untagged';
       }
 
-      const patterns = [
-        /(\d{1,2})(?:st|nd|rd|th)\s*(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*['\s._-]?(\d{2,4})/gi,
-        /(\d{1,2})(?:st|nd|rd|th)_?(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*['\s._-]?(\d{2,4})/gi
-      ];
-      let date = null;
-      for (const pattern of patterns) {
-        const match = pattern.exec(String(name || ''));
-        pattern.lastIndex = 0;
-        if (match) {
-          let year = Number(match[3]);
-          if (year < 100) year += 2000;
-          date = new Date(year, monthLookup[match[2].slice(0, 3).toLowerCase()], Number(match[1]));
-          break;
-        }
-      }
+      const date = extractPostingDate(name);
 
       return { platform, platformFromMeta, type, format, date };
     }
